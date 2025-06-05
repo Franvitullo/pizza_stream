@@ -1,0 +1,155 @@
+/* === 1. Contenedor base: ocupar todo el espacio y fondo transparente === */
+/* Se asegura de que el chat ocupe todo el ancho y alto, sin márgenes ni rellenos, y con fondo transparente */
+html,
+body,
+yt-live-chat-renderer {
+  width: 100% !important;              /* Ancho completo */
+  height: 100% !important;             /* Alto completo */
+  margin: 0 !important;                /* Sin margen */
+  padding: 0 !important;               /* Sin padding */
+  overflow: hidden !important;         /* Oculta scrollbars del contenedor global */
+  background-color: transparent !important; /* Fondo invisible */
+
+  /* Scrollbar oculto cross-browser */
+  -ms-overflow-style: none !important; /* IE y Edge */
+  scrollbar-width: none !important;    /* Firefox */
+}
+
+/* Ocultar scroll en navegadores basados en WebKit (Chrome, Safari) */
+::-webkit-scrollbar { display: none !important; }
+
+/* === 2. Escalado global (opcional) === */
+/* html { zoom: 150% !important; } */ /* Agranda todo el chat (descomentar para usar) */
+
+/* === 3. Ocultar elementos no deseados === */
+/* Quita la barra de título y el cuadro para escribir mensajes */
+yt-live-chat-header-renderer,
+yt-live-chat-message-input-renderer {
+  display: none !important;
+}
+
+/* Ocultar mensaje de bienvenida del chat de YouTube */
+yt-live-chat-viewer-engagement-message-renderer {
+  display: none !important;
+}
+
+/* === 4. Foto e insignias fuera === */
+#author-photo, 
+#author-badges { 
+  display: none !important; /* Elimina foto de perfil e insignias (moderador, miembro, etc.) */
+}
+
+/* === 5. Estilo base de mensajes === */
+/* Formato visual de cada mensaje del chat */
+yt-live-chat-text-message-renderer {
+  background-color: transparent !important;        /* Fondo invisible */
+  font-family: Arial, sans-serif !important;        /* Fuente Arial */
+  font-size: 40px !important;                       /* Texto grande */
+  color: #FFFFFF !important;                        /* Texto blanco */
+  text-shadow: 1px 1px 2px rgba(0,0,0,0.8) !important; /* Sombra para contraste */
+  line-height: 1.2em !important;                    /* Espaciado entre líneas */
+  margin: 0 0 4px 0 !important;                     /* Margen inferior mínimo */
+  padding: 0 !important;                            /* Sin padding */
+}
+
+/* Fondo transparente también para el texto del mensaje */
+yt-live-chat-text-message-renderer #message {
+  background-color: transparent !important;
+}
+
+/* === 6. Colores: autor vs contenido === */
+#author-name {
+  font-weight: bold !important; /* Negrita para el nombre */
+  color: #FFAA00 !important;    /* Nombre en amarillo */
+}
+#message {
+  color: #FFFFFF !important;    /* Mensaje en blanco */
+}
+
+/* === 7. Timestamp (hora del mensaje) === */
+#timestamp {
+  font-size: 24px !important;   /* Tamaño reducido */
+  color: #888888 !important;    /* Gris */
+  /* display: none !important; */ /* Descomentar si querés ocultarlo */
+}
+
+/* === 8. Autor y mensaje en la misma línea === */
+yt-live-chat-text-message-renderer #message,
+yt-live-chat-text-message-renderer #author-name {
+  display: inline !important;   /* Pone autor y mensaje en una sola línea */
+}
+
+/* === 9. Auto-ocultado por tiempo con efecto Bounce === */
+/* Controla cuánto tiempo permanece visible un mensaje */
+:root { --lifetime: 60s; } /* Duración total del ciclo de animación */
+
+/* Aplica la animación de entrada y salida */
+yt-live-chat-text-message-renderer,
+yt-live-chat-paid-message-renderer,
+yt-live-chat-membership-item-renderer,
+yt-live-chat-paid-sticker-renderer {
+  opacity: 0;                             /* Invisible al inicio */
+  transform: scale(0.8);                  /* Leve reducción inicial */
+  will-change: opacity, transform, max-height, margin, padding; /* Mejora rendimiento */
+  animation: msgBounce var(--lifetime) ease-out forwards; /* Efecto bounce */
+}
+
+/* ANIMACIÓN: Bounce In + Fade Out */
+@keyframes msgBounce {
+  0%   { opacity: 0; transform: scale(0.3); max-height: 0; }       /* Muy pequeño e invisible */
+  10%  { opacity: 1; transform: scale(1.1); max-height: 1000px; }  /* Rebote hacia adelante */
+  20%  { transform: scale(0.95); }                                 /* Rebote hacia atrás */
+  30%  { transform: scale(1); }                                    /* Tamaño normal */
+  85%  { opacity: 1; transform: scale(1); max-height: 1000px; }    /* Se mantiene */
+  100% {
+    opacity: 0;                         /* Se desvanece */
+    transform: scale(0.9);               /* Leve reducción al irse */
+    max-height: 0;                       /* Colapsa altura */
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;                    /* Sin scroll */
+  }
+}
+
+/* === 10. Contenedor de ítems corregido === */
+/* Permite que el último mensaje no quede recortado */
+#items {
+  overflow-y: auto !important;     /* Scroll interno vertical */
+  overflow-x: hidden !important;   /* Oculta scroll horizontal */
+  padding-right: 0 !important;
+  padding-bottom: 60px !important; /* Espacio extra abajo */
+  
+  /* Ocultar scrollbar en todos los navegadores */
+  -ms-overflow-style: none !important; /* IE/Edge */
+  scrollbar-width: none !important;    /* Firefox */
+}
+#items::-webkit-scrollbar {
+  display: none !important;           /* Chrome/Safari */
+}
+
+/* === 11. Evitar salto en el primer mensaje === */
+#items yt-live-chat-text-message-renderer:first-child {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+/* === 12. Evitar salto en el último mensaje === */
+#items yt-live-chat-text-message-renderer:last-child {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+yt-live-chat-text-message-renderer #content:last-child {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* === 13. Ajustes finos internos === */
+yt-live-chat-text-message-renderer #content,
+yt-live-chat-paid-message-renderer #content {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
