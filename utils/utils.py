@@ -8,6 +8,32 @@ from typing import List, Tuple, Union
 
 # Third-party library (módulo de Python para ffmpeg)
 import ffmpeg
+import yaml
+
+def load_config(config_path="config.yaml") -> dict:
+    """
+    Carga la configuración desde un archivo YAML.
+    Busca el archivo 'config_path' en el mismo directorio que este script (utils.py).
+    """
+    # Obtiene el directorio donde está utils.py
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Check in utils dir
+    full_path = os.path.join(base_dir, config_path)
+    if os.path.exists(full_path):
+        with open(full_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+            
+    # Check in parent dir (project root)
+    parent_path = os.path.join(base_dir, "..", config_path)
+    if os.path.exists(parent_path):
+        with open(parent_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    raise FileNotFoundError(f"Config file not found at: {full_path} or {parent_path}")
+        
+    # Removed the previous single open/return
+
 
 
 # Helpers internos (necesarios)
