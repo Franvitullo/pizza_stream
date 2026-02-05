@@ -168,16 +168,20 @@ def remove_silence_precise(
     video_codec: str = "libx264",
     audio_codec: str = "aac",
     preset: str = "medium",
-    use_fallback_silenceremove: bool = True
+    use_fallback_silenceremove: bool = True,
+    workers: int | None = None,
+    hwaccel: str | None = None
 ) -> str:
     """
     Recorta silencios con precisión (detección con silencedetect + trim/atrim + concat).
-    Ahora permite usar un buffer distinto al inicio y al final de cada fragmento de audio.
-
-    - buffer_start: segundos que se extienden ANTES del inicio del audio (hacia el silencio previo).
-    - buffer_end: segundos que se extienden DESPUÉS del final del audio (hacia el silencio siguiente).
-    Si son None, se usa 'buffer' para ambos (comportamiento antiguo).
+    Soporta procesamiento en paralelo dividiendo el trabajo en chunks.
+    
+    - workers: número de procesos paralelos.
+      Si workers es None o < 1, usa todos los cores disponibles (os.cpu_count()).
     """
+    import math
+    import concurrent.futures
+
     # Si no se especifican buffers específicos, usar el buffer genérico
     if buffer_start is None:
         buffer_start = buffer
@@ -191,7 +195,7 @@ def remove_silence_precise(
         raise FileNotFoundError(f"Input no existe: {input_path}")
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-    # 1) Detección de silencios
+    # 1) Detección de silencios (igual que antes)
     cmd_detection = [
         ffmpeg_bin, "-hide_banner", "-vn",
         "-i", input_path,
@@ -234,86 +238,133 @@ def remove_silence_precise(
     except Exception:
         total_duration = silence_periods[-1][1] if silence_periods else 0.0
 
-    # 4) Segmentos con audio (usando buffer_start / buffer_end)
+    # 4) Segmentos con audio
     segments: List[Tuple[float, float]] = []
     prev_end = 0.0
     for s_sil, e_sil in silence_periods:
-        # Hay audio entre prev_end (fin silencio anterior) y s_sil (inicio silencio actual)
         if s_sil > prev_end:
-            # Extendemos un poco hacia atrás y adelante
             s = max(0.0, prev_end - buffer_start)
             e = min(total_duration, s_sil + buffer_end)
             if e > s:
                 segments.append((s, e))
         prev_end = max(prev_end, e_sil)
 
-    # Último segmento (desde el fin del último silencio hasta el final del archivo)
     if prev_end < total_duration:
         s = max(0.0, prev_end - buffer_start)
-        e = total_duration  # el final ya es el borde del video; no hace falta buffer_end
+        e = total_duration
         if e > s:
             segments.append((s, e))
 
-    # Merge de segmentos solapados (respeta buffers)
     segments = _merge_segments(segments)
 
-    # Si no se detectaron silencios → copia directa
     if not segments:
+        print("No se encontraron silencios o segmentos válidos. Copiando original.")
         subprocess.run([ffmpeg_bin, "-y", "-i", input_path, "-c", "copy", output_path], check=True)
         return output_path
 
-    # 5) Generar filter_complex script
-    filter_lines = []
-    for i, (s, e) in enumerate(segments):
-        filter_lines.append(
-            f"[0:v]trim=start={s:.6f}:end={e:.6f},setpts=PTS-STARTPTS[v{i}];"
-            f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a{i}];"
-        )
-    concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(segments)))
-    filter_complex = "\n".join(filter_lines) + f"\n{concat_inputs}concat=n={len(segments)}:v=1:a=1[v][a]"
+    # Función interna para procesar un chunk
+    def _process_chunk_segments(chunk_segs, chunk_idx, tmp_dir):
+        chunk_out = os.path.join(tmp_dir, f"chunk_{chunk_idx:04d}.mp4")
+        
+        filter_lines = []
+        for i, (s, e) in enumerate(chunk_segs):
+            filter_lines.append(
+                f"[0:v]trim=start={s:.6f}:end={e:.6f},setpts=PTS-STARTPTS[v{i}];"
+                f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a{i}];"
+            )
+        concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(chunk_segs)))
+        filter_complex = "\n".join(filter_lines) + f"\n{concat_inputs}concat=n={len(chunk_segs)}:v=1:a=1[v][a]"
 
-    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt", encoding="utf-8") as tf:
-        tf.write(filter_complex)
-        filter_script = tf.name
+        # Usar utf-8 para el archivo de filtro
+        filter_file = os.path.join(tmp_dir, f"filter_{chunk_idx:04d}.txt")
+        with open(filter_file, "w", encoding="utf-8") as f:
+            f.write(filter_complex)
 
-    cmd_concat = [
-        ffmpeg_bin, "-y", "-hide_banner",
-        "-i", input_path,
-        "-filter_complex_script", filter_script,
-        "-map", "[v]", "-map", "[a]",
-        "-c:v", video_codec, "-preset", preset,
-        "-c:a", audio_codec,
-        output_path
-    ]
-    try:
-        subprocess.run(cmd_concat, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-    except subprocess.CalledProcessError as e:
-        print("\n--- FFmpeg filter_complex_script ---\n", filter_complex, "\n--- END ---\n")
-        print("\n--- FFmpeg STDERR (primeros 8000 chars) ---\n", (e.stderr or "")[:8000], "\n--- END ---\n")
-        if use_fallback_silenceremove:
-            fallback_cmd = [
+        cmd = [
+            ffmpeg_bin, "-y", "-hide_banner"
+        ]
+        
+        if hwaccel:
+            cmd.extend(["-hwaccel", hwaccel])
+            
+        cmd.extend([
+            "-i", input_path,
+            "-filter_complex_script", filter_file,
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", video_codec, "-preset", preset,
+            "-c:a", audio_codec,
+            chunk_out
+        ])
+        
+        # Ejecutar ffmpeg
+        # print(f"Procesando chunk {chunk_idx} ({len(chunk_segs)} segmentos)...")
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            print(f"Error en chunk {chunk_idx}: {res.stderr[-2000:]}")
+            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+        
+        return chunk_out
+
+    # 5) Procesamiento (puede ser paralelo)
+    if workers is None or workers < 1:
+        workers = os.cpu_count() or 1
+        
+    current_workers = max(1, min(workers, len(segments)))
+    
+    # Crear directorio temporal para los chunks
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Dividir segmentos en chunks
+        chunk_size = math.ceil(len(segments) / current_workers)
+        chunks = [segments[i:i + chunk_size] for i in range(0, len(segments), chunk_size)]
+        
+        print(f"Dividiendo {len(segments)} segmentos en {len(chunks)} tareas (workers={current_workers})...")
+
+        temp_files_map = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=current_workers) as executor:
+            future_to_idx = {
+                executor.submit(_process_chunk_segments, chunk, idx, temp_dir): idx 
+                for idx, chunk in enumerate(chunks)
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    out_file = future.result()
+                    temp_files_map[idx] = out_file
+                    print(f"Chunk {idx} completado.")
+                except Exception as exc:
+                    print(f"Chunk {idx} generó una excepción: {exc}")
+                    # Opcional: cancelar otros futures?
+                    raise exc
+
+        # Ordenar archivos resultantes
+        ordered_files = [temp_files_map[i] for i in range(len(chunks))]
+
+        # Concatenar resultados
+        if len(ordered_files) == 1:
+            # Si solo hay uno, moverlo al destino final
+            shutil.move(ordered_files[0], output_path)
+            print(f"Proceso completado. Archivo generado en: {output_path}")
+        else:
+            # Generar lista para concat demuxer
+            concat_list = os.path.join(temp_dir, "concat_list.txt")
+            with open(concat_list, "w", encoding="utf-8") as f:
+                for tf in ordered_files:
+                    # Windows path compatibility
+                    safe_path = tf.replace("\\", "/")
+                    f.write(f"file '{safe_path}'\n")
+
+            print("Concatenando chunks finales...")
+            cmd_merge = [
                 ffmpeg_bin, "-y", "-hide_banner",
-                "-i", input_path,
-                "-c:v", "copy",
-                "-af",
-                (
-                    "silenceremove="
-                    f"start_periods=1:start_threshold={silence_threshold}dB:start_silence={silence_min_duration}:"
-                    f"stop_periods=1:stop_threshold={silence_threshold}dB:stop_silence={silence_min_duration}"
-                ),
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list,
+                "-c", "copy",
                 output_path
             ]
-            fb = subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if fb.returncode != 0:
-                print("\n--- Fallback STDERR ---\n", (fb.stderr or "")[:8000], "\n--- END ---\n")
-                raise
-        else:
-            raise
-    finally:
-        try:
-            os.remove(filter_script)
-        except OSError:
-            pass
+            subprocess.run(cmd_merge, check=True)
+            print(f"Proceso completado (merged). Archivo generado en: {output_path}")
 
     return output_path
 

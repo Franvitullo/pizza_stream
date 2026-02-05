@@ -21,7 +21,7 @@ def find_cell_index(cells, content_snippet):
 idx_import = find_cell_index(cells, "import utils as u")
 if idx_import != -1:
     cells[idx_import]['source'] = [
-        "import utils as u\n",
+        "import utils_pizzastream as u\n",
         "import os\n",
         "# Load configuration\n",
         "config = u.load_config()"
